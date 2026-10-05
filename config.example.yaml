@@ -1,0 +1,17 @@
+listen: "127.0.0.1:8787"
+base_path: ""
+data_root: /mnt/GPS_Admin/GNSS_Data
+db_path: /var/lib/t0x-map/t0x-map.db
+viewdat_path: viewdat
+groups:
+  - BASES
+  - GRK
+  - IRELAND
+  - Judos
+  - MP
+  - MP-CAN
+  - ROVERS
+  - RTX
+  - TCC
+  - Terrasat
+  - TestSite

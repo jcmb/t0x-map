@@ -1,0 +1,18 @@
+[Unit]
+Description=t0x-map — T02/T04/T05 file map browser
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gnssplot
+Group=gnssplot
+ExecStart=/usr/local/bin/t0x-map serve -config /etc/t0x-map/config.yaml
+Restart=on-failure
+RestartSec=5
+StateDirectory=t0x-map
+WorkingDirectory=/var/lib/t0x-map
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>t0x-map</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+  <link rel="stylesheet" href="app.css?v=__VERSION__">
+</head>
+<body>
+  <aside class="panel">
+    <header>
+      <h1>t0x-map</h1>
+      <p class="tagline">T02 / T04 / T05 file locations</p>
+    </header>
+    <form id="filters">
+      <label>
+        Group
+        <select id="group">
+          <option value="">All groups</option>
+        </select>
+      </label>
+      <label>
+        Receiver
+        <select id="receiver">
+          <option value="">All receivers</option>
+        </select>
+      </label>
+      <label>
+        Time zone
+        <select id="tz">
+          <option value="utc" selected>UTC</option>
+          <option value="local">Local (browser)</option>
+        </select>
+      </label>
+      <label>
+        From date
+        <input type="date" id="from">
+      </label>
+      <label>
+        To date
+        <input type="date" id="to">
+      </label>
+      <div class="actions date-actions">
+        <button type="button" id="all-dates" class="secondary" title="Clear From/To and show all files">All dates</button>
+        <button type="button" id="last-week" class="secondary" title="From = today−7, To = today">Last 7 days</button>
+      </div>
+      <div class="actions">
+        <button type="submit">Apply</button>
+        <button type="button" id="reset">Reset</button>
+      </div>
+    </form>
+    <p id="status" class="status">Loading…</p>
+    <div class="timeline-toolbar">
+      <button type="button" id="select-all" class="secondary" disabled>Select all</button>
+      <button type="button" id="clear-selection" class="secondary" disabled>Clear</button>
+    </div>
+    <div id="selection-list" class="selection-list"></div>
+    <button type="button" id="download-selected" class="secondary" disabled>Download selected</button>
+  </aside>
+
+  <section class="main">
+    <div class="view-tabs" role="tablist" aria-label="Main view">
+      <button type="button" class="view-tab active" data-view="map" role="tab" aria-selected="true">Map</button>
+      <button type="button" class="view-tab" data-view="timeline" role="tab" aria-selected="false" disabled title="Select a group first">Timeline</button>
+      <button type="button" class="view-tab" data-view="table" role="tab" aria-selected="false" disabled title="Select a receiver first">Table</button>
+    </div>
+    <div class="view-body">
+      <div id="view-map" class="view-pane active">
+        <div id="map"></div>
+      </div>
+      <div id="view-timeline" class="view-pane">
+        <div class="timeline-tools">
+          <button type="button" id="tl-zoom-in" class="secondary" title="Zoom in">+</button>
+          <button type="button" id="tl-zoom-out" class="secondary" title="Zoom out">−</button>
+          <button type="button" id="tl-zoom-reset" class="secondary" title="Fit all data">Reset zoom</button>
+          <span class="tl-hint">Scroll to zoom · drag plot to pan</span>
+        </div>
+        <div id="timeline" class="timeline-chart"></div>
+      </div>
+      <div id="view-table" class="view-pane">
+        <div id="day-table" class="day-table"></div>
+      </div>
+    </div>
+  </section>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="app.js?v=__VERSION__"></script>
+</body>
+</html>

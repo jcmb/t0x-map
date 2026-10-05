@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly t0x-map full index (additions and deleted-file cleanup)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+Persistent=true
+Unit=t0x-map-index.service
+
+[Install]
+WantedBy=timers.target

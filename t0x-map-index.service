@@ -1,0 +1,12 @@
+[Unit]
+Description=t0x-map full index of T02/T04/T05 files
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=gnssplot
+Group=gnssplot
+ExecStart=/usr/local/bin/t0x-map index -config /etc/t0x-map/config.yaml
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
