@@ -24,10 +24,14 @@
   let meta = { groups: [], receivers: {} };
   let view = "map";
   let allFiles = [];
-  let lastFeatures = [];
+  let bases = []; // one map point per group/receiver
+  let filesLoadedKey = "";
+  let lastStatusMeta = null;
   const selected = new Set();
   const fileById = new Map();
   const expandedDays = new Set();
+  let tableSelectAnchor = null; // file id for Shift+click range
+  let tableFileOrder = []; // display order of file rows in last table render
 
   // Timeline zoom window (ms since epoch), relative to current data extent.
   let timelineDataKey = "";
@@ -336,8 +340,17 @@
       pane.classList.toggle("active", pane.id === `view-${view}`);
     });
     if (view === "map") setTimeout(() => map.invalidateSize(), 50);
-    if (view === "timeline") renderTimelineChart();
-    if (view === "table") renderDayTable();
+    if (view === "timeline" || view === "table") {
+      ensureFilesLoaded()
+        .then(() => {
+          if (view === "timeline") renderTimelineChart();
+          if (view === "table") renderDayTable();
+        })
+        .catch((err) => {
+          statusEl.textContent = String(err);
+        });
+      return;
+    }
   }
 
   function syncSelectionUI() {
@@ -634,35 +647,105 @@
     timelineEl.appendChild(svg);
   }
 
-  function rateLinks(fileId, forDay) {
+  function formatInterval(sec) {
+    if (sec == null || !Number.isFinite(sec) || sec <= 0) return "—";
+    if (sec >= 0.95) {
+      const n = Math.round(sec);
+      return n === 1 ? "1 s" : `${n} s`;
+    }
+    const hz = 1 / sec;
+    if (hz >= 0.95) return `${hz.toFixed(hz >= 10 ? 0 : 1)} Hz`;
+    return `${sec.toFixed(2)} s`;
+  }
+
+  function dayRateSummary(dayFiles) {
+    let pos = null;
+    let obs = null;
+    for (const f of dayFiles) {
+      if (f.pos_interval_s != null && (pos == null || f.pos_interval_s < pos)) {
+        pos = f.pos_interval_s;
+      }
+      if (f.obs_interval_s != null && (obs == null || f.obs_interval_s < obs)) {
+        obs = f.obs_interval_s;
+      }
+    }
+    return { pos, obs };
+  }
+
+  async function exportFiles(ids, rate) {
+    if (!ids.length) return;
+    statusEl.textContent =
+      rate === "original" ? "Combining…" : `Exporting ${rate}…`;
+    const res = await fetch(api("/api/export"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids, rate }),
+    });
+    if (!res.ok) {
+      let detail = "";
+      try {
+        detail = (await res.text()).trim();
+      } catch (_) {
+        /* ignore */
+      }
+      statusEl.textContent = `export failed (${res.status})${detail ? ": " + detail : ""}`;
+      return;
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download =
+      filenameFromContentDisposition(res.headers.get("Content-Disposition")) ||
+      "export.T04";
+    a.click();
+    URL.revokeObjectURL(url);
+    statusEl.textContent = `Downloaded ${a.download}`;
+  }
+
+  function rateLinks(ids, opts) {
     const wrap = document.createElement("div");
     wrap.className = "dl-links";
-    if (forDay) {
-      const orig = document.createElement("a");
-      orig.href = "#";
-      orig.textContent = "Original";
-      const s1 = document.createElement("span");
-      s1.className = "soon";
-      s1.textContent = "1 second";
-      s1.title = "Coming later";
-      const s30 = document.createElement("span");
-      s30.className = "soon";
-      s30.textContent = "30 seconds";
-      s30.title = "Coming later";
-      wrap.append(orig, s1, s30);
-      return wrap;
-    }
+    const list = Array.isArray(ids) ? ids : [ids];
+    const singleOriginal = opts && opts.singleOriginal;
+
     const orig = document.createElement("a");
-    orig.href = api("/api/download/" + fileId);
+    orig.href = "#";
     orig.textContent = "Original";
-    const s1 = document.createElement("span");
-    s1.className = "soon";
+    orig.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (singleOriginal && list.length === 1) {
+        window.location.href = api("/api/download/" + list[0]);
+        return;
+      }
+      exportFiles(list, "original").catch((err) => {
+        statusEl.textContent = String(err);
+      });
+    });
+
+    const s1 = document.createElement("a");
+    s1.href = "#";
     s1.textContent = "1 second";
-    s1.title = "Coming later";
-    const s30 = document.createElement("span");
-    s30.className = "soon";
+    s1.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      exportFiles(list, "1s").catch((err) => {
+        statusEl.textContent = String(err);
+      });
+    });
+
+    const s30 = document.createElement("a");
+    s30.href = "#";
     s30.textContent = "30 seconds";
-    s30.title = "Coming later";
+    s30.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      exportFiles(list, "30s").catch((err) => {
+        statusEl.textContent = String(err);
+      });
+    });
+
     wrap.append(orig, s1, s30);
     return wrap;
   }
@@ -677,8 +760,30 @@
     return { start: minStart, end: maxEnd };
   }
 
+  function applyTableSelect(fileId, shiftKey) {
+    if (
+      shiftKey &&
+      tableSelectAnchor != null &&
+      tableFileOrder.includes(tableSelectAnchor) &&
+      tableFileOrder.includes(fileId)
+    ) {
+      const a = tableFileOrder.indexOf(tableSelectAnchor);
+      const b = tableFileOrder.indexOf(fileId);
+      const lo = Math.min(a, b);
+      const hi = Math.max(a, b);
+      for (let i = lo; i <= hi; i++) selected.add(tableFileOrder[i]);
+    } else {
+      if (selected.has(fileId)) selected.delete(fileId);
+      else selected.add(fileId);
+      tableSelectAnchor = fileId;
+    }
+    syncSelectionUI();
+    renderDayTable();
+  }
+
   function renderDayTable() {
     dayTableEl.innerHTML = "";
+    tableFileOrder = [];
     if (!receiverEl.value) {
       dayTableEl.innerHTML =
         '<p class="table-hint">Select a receiver to open the Table view.</p>';
@@ -697,10 +802,13 @@
     table.innerHTML = `
       <thead>
         <tr>
+          <th class="col-check"></th>
           <th></th>
           <th>Day (${tzNote})</th>
           <th>Start</th>
           <th>End</th>
+          <th>Pos rate</th>
+          <th>Raw rate</th>
           <th>Files</th>
           <th>Download</th>
         </tr>
@@ -710,10 +818,15 @@
 
     for (const [day, dayFiles] of byDay) {
       const times = daySummaryTimes(dayFiles);
+      const rates = dayRateSummary(dayFiles);
       const open = expandedDays.has(day);
+      const dayIds = dayFiles.map((f) => f.id);
 
       const sum = document.createElement("tr");
       sum.className = "day-summary";
+
+      const tdCheck = document.createElement("td");
+      tdCheck.className = "col-check";
 
       const tdToggle = document.createElement("td");
       const toggle = document.createElement("span");
@@ -727,20 +840,26 @@
       tdStart.textContent = formatTimeOnly(times.start);
       const tdEnd = document.createElement("td");
       tdEnd.textContent = formatTimeOnly(times.end);
+      const tdPos = document.createElement("td");
+      tdPos.textContent = formatInterval(rates.pos);
+      const tdRaw = document.createElement("td");
+      tdRaw.textContent = formatInterval(rates.obs);
       const tdCount = document.createElement("td");
       tdCount.textContent = String(dayFiles.length);
       const tdDl = document.createElement("td");
-      const dayLinks = rateLinks(null, true);
-      dayLinks.querySelector("a").addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        for (const f of dayFiles) selected.add(f.id);
-        syncSelectionUI();
-        statusEl.textContent = `Selected ${dayFiles.length} file(s) for ${day}. Use Download selected.`;
-      });
-      tdDl.appendChild(dayLinks);
+      tdDl.appendChild(rateLinks(dayIds, {}));
 
-      sum.append(tdToggle, tdDay, tdStart, tdEnd, tdCount, tdDl);
+      sum.append(
+        tdCheck,
+        tdToggle,
+        tdDay,
+        tdStart,
+        tdEnd,
+        tdPos,
+        tdRaw,
+        tdCount,
+        tdDl
+      );
       sum.addEventListener("click", (e) => {
         if (e.target.closest(".dl-links")) return;
         if (expandedDays.has(day)) expandedDays.delete(day);
@@ -756,8 +875,19 @@
         return String(a.filename).localeCompare(String(b.filename));
       });
       for (const f of ordered) {
+        tableFileOrder.push(f.id);
         const child = document.createElement("tr");
-        child.className = "child-row" + (open ? "" : " hidden");
+        child.className =
+          "child-row" +
+          (open ? "" : " hidden") +
+          (selected.has(f.id) ? " selected" : "");
+        const cCheck = document.createElement("td");
+        cCheck.className = "col-check";
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = selected.has(f.id);
+        cb.title = "Select file (Shift+click for range)";
+        cCheck.appendChild(cb);
         const c0 = document.createElement("td");
         const cName = document.createElement("td");
         cName.textContent = f.filename;
@@ -765,11 +895,20 @@
         cStart.textContent = formatTimeOnly(f.start_time);
         const cEnd = document.createElement("td");
         cEnd.textContent = formatTimeOnly(f.end_time);
+        const cPos = document.createElement("td");
+        cPos.textContent = formatInterval(f.pos_interval_s);
+        const cRaw = document.createElement("td");
+        cRaw.textContent = formatInterval(f.obs_interval_s);
         const cSize = document.createElement("td");
         cSize.textContent = formatSize(f.size_bytes);
         const cDl = document.createElement("td");
-        cDl.appendChild(rateLinks(f.id, false));
-        child.append(c0, cName, cStart, cEnd, cSize, cDl);
+        cDl.appendChild(rateLinks([f.id], { singleOriginal: true }));
+        child.append(cCheck, c0, cName, cStart, cEnd, cPos, cRaw, cSize, cDl);
+        child.addEventListener("click", (e) => {
+          if (e.target.closest(".dl-links")) return;
+          e.preventDefault();
+          applyTableSelect(f.id, e.shiftKey);
+        });
         tbody.appendChild(child);
       }
     }
@@ -781,29 +920,26 @@
   function renderMap() {
     layer.clearLayers();
     const bounds = [];
-    for (const f of lastFeatures || []) {
-      const id = f.properties?.id;
-      const props = id != null ? fileById.get(id) : null;
-      if (!props) continue;
-      const [lon, lat] = f.geometry.coordinates;
-      const marker = L.circleMarker([lat, lon], {
+    for (const b of bases || []) {
+      if (b.lat == null || b.lon == null) continue;
+      const marker = L.circleMarker([b.lat, b.lon], {
         radius: 7,
         color: "#1f6f4a",
         fillColor: "#3ecf8e",
         fillOpacity: 0.85,
         weight: 1,
       });
-      marker.bindTooltip(`${props.group} / ${props.receiver}`, {
+      marker.bindTooltip(`${b.group} / ${b.receiver} (${b.file_count} files)`, {
         direction: "top",
         opacity: 0.9,
       });
       marker.on("click", () => {
-        goToTimelineForReceiver(props.group, props.receiver).catch((err) => {
+        goToTimelineForReceiver(b.group, b.receiver).catch((err) => {
           statusEl.textContent = String(err);
         });
       });
       marker.addTo(layer);
-      bounds.push([lat, lon]);
+      bounds.push([b.lat, b.lon]);
     }
     if (bounds.length) map.fitBounds(bounds, { padding: [40, 40], maxZoom: 12 });
   }
@@ -815,10 +951,27 @@
     else parts.push("all dates");
     if (m.group) parts.push(`group ${m.group}`);
     if (m.receiver) parts.push(m.receiver);
-    let msg = `${m.total} file(s) (${parts.join(", ")})`;
+    const baseN = m.bases != null ? m.bases : bases.length;
+    let msg = `${baseN} base(s)`;
+    if (m.total != null) msg += ` · ${m.total} file(s)`;
+    msg += ` (${parts.join(", ")})`;
     if (m.without_time > 0) msg += ` · ${m.without_time} missing times`;
-    if (m.on_map != null && m.without_position > 0) msg += ` · ${m.on_map} on map`;
     return msg;
+  }
+
+  function filterParams() {
+    const params = new URLSearchParams();
+    if (groupEl.value) params.set("group", groupEl.value);
+    if (receiverEl.value) params.set("receiver", receiverEl.value);
+    const fromBound = apiFromBound(fromEl.value);
+    const toBound = apiToBound(toEl.value);
+    if (fromBound) params.set("from", fromBound);
+    if (toBound) params.set("to", toBound);
+    return params;
+  }
+
+  function filesCacheKey() {
+    return filterParams().toString();
   }
 
   async function loadMeta() {
@@ -834,22 +987,35 @@
     fillGroups();
   }
 
-  async function loadFiles() {
-    const params = new URLSearchParams();
-    if (groupEl.value) params.set("group", groupEl.value);
-    if (receiverEl.value) params.set("receiver", receiverEl.value);
-    const fromBound = apiFromBound(fromEl.value);
-    const toBound = apiToBound(toEl.value);
-    if (fromBound) params.set("from", fromBound);
-    if (toBound) params.set("to", toBound);
+  async function loadBases() {
+    const params = filterParams();
+    statusEl.textContent = "Loading bases…";
+    const res = await fetch(`${api("/api/bases")}?${params}`);
+    if (!res.ok) throw new Error(`bases ${res.status}`);
+    const body = await res.json();
+    bases = Array.isArray(body.bases) ? body.bases : [];
+    lastStatusMeta = body.meta || {
+      bases: bases.length,
+      total: 0,
+      group: groupEl.value,
+      receiver: receiverEl.value,
+      from: fromEl.value,
+      to: toEl.value,
+    };
+    renderMap();
+    statusEl.textContent = statusText(lastStatusMeta);
+  }
 
+  async function loadFiles() {
+    const params = filterParams();
+    const key = params.toString();
     statusEl.textContent = "Loading files…";
     const res = await fetch(`${api("/api/files")}?${params}`);
     if (!res.ok) throw new Error(`files ${res.status}`);
     const gj = await res.json();
 
     allFiles = gj.files || [];
-    lastFeatures = gj.features || [];
+    filesLoadedKey = key;
     fileById.clear();
     for (const f of allFiles) fileById.set(f.id, f);
 
@@ -859,23 +1025,39 @@
     }
 
     updateTabAvailability();
-    renderMap();
     if (view === "timeline") renderTimelineChart();
     if (view === "table") renderDayTable();
     syncSelectionUI();
 
-    statusEl.textContent = statusText(
-      gj.meta || {
-        total: allFiles.length,
-        group: groupEl.value,
-        receiver: receiverEl.value,
-        from: fromEl.value,
-        to: toEl.value,
-        without_time: 0,
-        without_position: 0,
-        on_map: lastFeatures.length,
-      }
-    );
+    const m = gj.meta || {
+      total: allFiles.length,
+      group: groupEl.value,
+      receiver: receiverEl.value,
+      from: fromEl.value,
+      to: toEl.value,
+    };
+    m.bases = bases.length;
+    lastStatusMeta = m;
+    statusEl.textContent = statusText(m);
+  }
+
+  async function ensureFilesLoaded() {
+    if (filesLoadedKey === filesCacheKey() && allFiles.length) return;
+    await loadFiles();
+  }
+
+  /** Refresh map/meta quickly; pull full file list only when Timeline/Table need it. */
+  async function refreshFilters() {
+    updateTabAvailability();
+    await loadBases();
+    if (view === "timeline" || view === "table") {
+      await loadFiles();
+    } else {
+      // Invalidate cached file list so the next Timeline/Table open reloads.
+      filesLoadedKey = "";
+      allFiles = [];
+      fileById.clear();
+    }
   }
 
   function reloadViews() {
@@ -894,7 +1076,7 @@
 
   document.getElementById("filters").addEventListener("submit", (e) => {
     e.preventDefault();
-    loadFiles().catch((err) => {
+    refreshFilters().catch((err) => {
       statusEl.textContent = String(err);
     });
   });
@@ -905,47 +1087,46 @@
     tzEl.value = "utc";
     setDefaultDates();
     selected.clear();
+    tableSelectAnchor = null;
     expandedDays.clear();
     fillReceivers();
     updateTabAvailability();
     setView("map");
-    loadFiles().catch((err) => {
+    refreshFilters().catch((err) => {
       statusEl.textContent = String(err);
     });
   });
 
   document.getElementById("all-dates").addEventListener("click", () => {
     clearDates();
-    loadFiles().catch((err) => {
+    refreshFilters().catch((err) => {
       statusEl.textContent = String(err);
     });
   });
 
   document.getElementById("last-week").addEventListener("click", () => {
     setDefaultDates();
-    loadFiles().catch((err) => {
+    refreshFilters().catch((err) => {
       statusEl.textContent = String(err);
     });
   });
 
   tzEl.addEventListener("change", () => {
-    // Re-interpret date inputs in new zone for query, and refresh displays.
-    loadFiles().catch((err) => {
+    refreshFilters().catch((err) => {
       statusEl.textContent = String(err);
     });
   });
 
   groupEl.addEventListener("change", () => {
     fillReceivers();
-    updateTabAvailability();
-    loadFiles().catch((err) => {
+    refreshFilters().catch((err) => {
       statusEl.textContent = String(err);
     });
   });
 
   receiverEl.addEventListener("change", () => {
-    updateTabAvailability();
-    loadFiles().catch((err) => {
+    tableSelectAnchor = null;
+    refreshFilters().catch((err) => {
       statusEl.textContent = String(err);
     });
   });
@@ -958,13 +1139,36 @@
     for (const f of src) selected.add(f.id);
     syncSelectionUI();
     if (view === "timeline") renderTimelineChart();
+    if (view === "table") renderDayTable();
   });
 
   clearBtn.addEventListener("click", () => {
     selected.clear();
+    tableSelectAnchor = null;
     syncSelectionUI();
     if (view === "timeline") renderTimelineChart();
+    if (view === "table") renderDayTable();
   });
+
+  function selectionZipName() {
+    const recvs = new Set();
+    const groups = new Set();
+    for (const id of selected) {
+      const f = fileById.get(id);
+      if (!f) continue;
+      if (f.receiver) recvs.add(f.receiver);
+      if (f.group) groups.add(f.group);
+    }
+    if (recvs.size === 1) return [...recvs][0] + ".zip";
+    if (groups.size === 1) return [...groups][0] + ".zip";
+    return "t0x-files.zip";
+  }
+
+  function filenameFromContentDisposition(header) {
+    if (!header) return "";
+    const m = /filename="([^"]+)"/i.exec(header);
+    return m ? m[1] : "";
+  }
 
   downloadBtn.addEventListener("click", async () => {
     const ids = [...selected];
@@ -983,7 +1187,9 @@
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "t0x-files.zip";
+    a.download =
+      filenameFromContentDisposition(res.headers.get("Content-Disposition")) ||
+      selectionZipName();
     a.click();
     URL.revokeObjectURL(url);
     statusEl.textContent = `Downloaded ${ids.length} file(s)`;
@@ -1061,11 +1267,11 @@
   });
 
   setDefaultDates();
-  loadMeta()
+  // Meta + bases are small; full /api/files waits until Timeline/Table.
+  Promise.all([loadMeta(), loadBases()])
     .then(() => {
       updateTabAvailability();
       setView("map");
-      return loadFiles();
     })
     .catch((err) => {
       statusEl.textContent = String(err);

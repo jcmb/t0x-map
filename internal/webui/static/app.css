@@ -400,6 +400,29 @@ button:disabled {
   background: #1c2834;
 }
 
+.day-table .child-row {
+  cursor: pointer;
+}
+
+.day-table .child-row.selected td {
+  background: #1a2e24;
+}
+
+.day-table .col-check {
+  width: 1.6rem;
+  text-align: center;
+  vertical-align: middle;
+  padding-left: 0.55rem !important;
+  padding-right: 0.25rem;
+}
+
+.day-table .col-check input {
+  width: auto;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
 .day-table .toggle {
   display: inline-block;
   width: 1rem;
@@ -411,8 +434,11 @@ button:disabled {
   background: #0e141a;
   color: var(--muted);
   font-size: 0.8rem;
-  padding-left: 1.8rem;
   font-variant-numeric: tabular-nums;
+}
+
+.day-table .child-row td:nth-child(3) {
+  padding-left: 1.25rem;
 }
 
 .day-table .child-row.hidden {
@@ -425,20 +451,18 @@ button:disabled {
   gap: 0.45rem;
 }
 
-.dl-links a,
-.dl-links span {
+.dl-links a {
   font-size: 0.75rem;
   text-decoration: none;
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 0.15rem 0.4rem;
   color: var(--accent);
+  cursor: pointer;
 }
 
-.dl-links .soon {
-  color: var(--muted);
-  cursor: default;
-  opacity: 0.75;
+.dl-links a:hover {
+  background: #1c2834;
 }
 
 @media (max-width: 900px) {

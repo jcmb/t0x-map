@@ -1,6 +1,10 @@
 package api
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/gkirk/t0x-map/internal/db"
+)
 
 func TestSafeZipEntryName(t *testing.T) {
 	ok, err := safeZipEntryName("BASES/RX1/file.T02")
@@ -40,4 +44,22 @@ func stringsContainsQuoteOrCRLF(s string) bool {
 		}
 	}
 	return false
+}
+
+func TestZipBaseName(t *testing.T) {
+	if g := zipBaseName([]db.File{{Receiver: "Alpha", GroupName: "BASES"}}); g != "Alpha.zip" {
+		t.Fatalf("got %q", g)
+	}
+	if g := zipBaseName([]db.File{
+		{Receiver: "A", GroupName: "BASES"},
+		{Receiver: "B", GroupName: "BASES"},
+	}); g != "BASES.zip" {
+		t.Fatalf("got %q", g)
+	}
+	if g := zipBaseName([]db.File{
+		{Receiver: "A", GroupName: "G1"},
+		{Receiver: "B", GroupName: "G2"},
+	}); g != "t0x-files.zip" {
+		t.Fatalf("got %q", g)
+	}
 }

@@ -49,6 +49,20 @@ func TestParseX29Sample(t *testing.T) {
 	if info.Lon > -104.99 || info.Lon < -105.01 {
 		t.Fatalf("lon %v", info.Lon)
 	}
+	if !info.HasPosInterval {
+		t.Fatal("expected HasPosInterval")
+	}
+	// Samples are 0.6 s apart.
+	if info.PosIntervalS < 0.55 || info.PosIntervalS > 0.65 {
+		t.Fatalf("pos interval %v", info.PosIntervalS)
+	}
+}
+
+func TestMedianFloat(t *testing.T) {
+	v, ok := medianFloat([]float64{1, 0.2, 0.2, 0.2, 5})
+	if !ok || v < 0.19 || v > 0.21 {
+		t.Fatalf("got %v %v", v, ok)
+	}
 }
 
 func TestIsT0xCaseSensitive(t *testing.T) {

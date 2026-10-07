@@ -159,9 +159,9 @@ func (idx *Indexer) indexPath(ctx context.Context, path string, st *Stats) (stri
 		return "", err
 	}
 	mtime := fi.ModTime().Unix()
-	// Re-extract when timestamps are missing even if size/mtime unchanged.
+	// Re-extract when timestamps/rates are missing even if size/mtime unchanged.
 	if existing != nil && existing.SizeBytes == fi.Size() && existing.MtimeUnix == mtime &&
-		existing.StartTime.Valid && existing.EndTime.Valid {
+		existing.StartTime.Valid && existing.EndTime.Valid && existing.RatesChecked {
 		st.Skipped++
 		return "skip", nil
 	}
@@ -188,6 +188,7 @@ func (idx *Indexer) indexPath(ctx context.Context, path string, st *Stats) (stri
 	}
 
 	info, err := idx.viewdat.Extract(ctx, path)
+	rec.RatesChecked = true
 	if err != nil {
 		idx.log.Printf("viewdat %s: %v (storing without metadata)", path, err)
 	} else {
@@ -198,6 +199,12 @@ func (idx *Indexer) indexPath(ctx context.Context, path string, st *Stats) (stri
 		if info.HasPos {
 			rec.Lat = sql.NullFloat64{Float64: info.Lat, Valid: true}
 			rec.Lon = sql.NullFloat64{Float64: info.Lon, Valid: true}
+		}
+		if info.HasPosInterval {
+			rec.PosIntervalS = sql.NullFloat64{Float64: info.PosIntervalS, Valid: true}
+		}
+		if info.HasObsInterval {
+			rec.ObsIntervalS = sql.NullFloat64{Float64: info.ObsIntervalS, Valid: true}
 		}
 	}
 

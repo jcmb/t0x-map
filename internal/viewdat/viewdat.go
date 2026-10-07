@@ -8,18 +8,23 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 )
 
 type Info struct {
-	Start   time.Time
-	End     time.Time
-	Lat     float64
-	Lon     float64
-	HasPos  bool
-	HasTime bool
+	Start          time.Time
+	End            time.Time
+	Lat            float64
+	Lon            float64
+	HasPos         bool
+	HasTime        bool
+	PosIntervalS   float64 // position spacing (seconds); 0 if unknown
+	HasPosInterval bool
+	ObsIntervalS   float64 // epoch / raw spacing (seconds); 0 if unknown
+	HasObsInterval bool
 }
 
 type Client struct {
@@ -50,6 +55,11 @@ func (c *Client) Extract(ctx context.Context, filePath string) (*Info, error) {
 	if err := c.parseX29(ctx, filePath, info); err != nil {
 		return info, err
 	}
+	// Epoch (raw) spacing from measurement dump; best-effort.
+	if err := c.parseEpochSpacing(ctx, filePath, info); err != nil {
+		// Position extract already succeeded; leave obs interval unset.
+		_ = err
+	}
 	return info, nil
 }
 
@@ -77,6 +87,35 @@ func (c *Client) parseX29(ctx context.Context, filePath string, info *Info) erro
 	return parseX29File(tmpPath, info)
 }
 
+func (c *Client) parseEpochSpacing(ctx context.Context, filePath string, info *Info) error {
+	tmp, err := os.CreateTemp("", "t0x-map-*.x27")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	_ = tmp.Close()
+	defer os.Remove(tmpPath)
+
+	cmd := exec.CommandContext(ctx, c.Bin,
+		"-d27",
+		"--translate_rec35_sub9_to_rec27",
+		"-x",
+		"-o"+tmpPath,
+		filePath,
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("viewdat -d27: %w (%s)", err, truncate(string(out), 400))
+	}
+	interval, ok := medianEpochSpacing(tmpPath)
+	if !ok {
+		return fmt.Errorf("no usable measurement epochs")
+	}
+	info.ObsIntervalS = interval
+	info.HasObsInterval = true
+	return nil
+}
+
 // parseX29File reads viewdat -x CSV:
 //
 //	field 0 = GPS week, field 1 = seconds of week, fields 10/11 = lat/lon.
@@ -96,6 +135,9 @@ func parseX29File(path string, info *Info) error {
 		first, last    time.Time
 		haveTime       bool
 		lineNo         int
+		prevSOW        float64
+		havePrev       bool
+		deltas         []float64
 	)
 
 	for sc.Scan() {
@@ -118,6 +160,17 @@ func parseX29File(path string, info *Info) error {
 				haveTime = true
 			}
 			last = t
+			if havePrev {
+				d := sow - prevSOW
+				if d < 0 {
+					d += float64(secondsPerWeek)
+				}
+				if d > 1e-6 && d < 3600 {
+					deltas = append(deltas, d)
+				}
+			}
+			prevSOW = sow
+			havePrev = true
 		}
 
 		// Sample positions (~every 60th epoch) to keep large files cheap.
@@ -152,7 +205,70 @@ func parseX29File(path string, info *Info) error {
 		info.Lon = sumLon / float64(nPos)
 		info.HasPos = true
 	}
+	if interval, ok := medianFloat(deltas); ok {
+		info.PosIntervalS = interval
+		info.HasPosInterval = true
+	}
 	return nil
+}
+
+func medianEpochSpacing(path string) (float64, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, false
+	}
+	defer f.Close()
+
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
+
+	var (
+		prevSOW  float64
+		havePrev bool
+		deltas   []float64
+	)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Split(line, ",")
+		if len(fields) < 2 {
+			continue
+		}
+		week, errW := strconv.Atoi(strings.TrimSpace(fields[0]))
+		sow, errS := strconv.ParseFloat(strings.TrimSpace(fields[1]), 64)
+		if errW != nil || errS != nil || week <= 0 || sow < 0 || sow >= float64(secondsPerWeek)+1 {
+			continue
+		}
+		if havePrev {
+			d := sow - prevSOW
+			if d < 0 {
+				d += float64(secondsPerWeek)
+			}
+			if d > 1e-6 && d < 3600 {
+				deltas = append(deltas, d)
+			}
+		}
+		prevSOW = sow
+		havePrev = true
+	}
+	if err := sc.Err(); err != nil {
+		return 0, false
+	}
+	return medianFloat(deltas)
+}
+
+func medianFloat(vals []float64) (float64, bool) {
+	if len(vals) == 0 {
+		return 0, false
+	}
+	sort.Float64s(vals)
+	mid := len(vals) / 2
+	if len(vals)%2 == 1 {
+		return vals[mid], true
+	}
+	return (vals[mid-1] + vals[mid]) / 2, true
 }
 
 func truncate(s string, n int) string {

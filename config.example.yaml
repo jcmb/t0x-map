@@ -3,6 +3,8 @@ base_path: ""
 data_root: /mnt/GPS_Admin/GNSS_Data
 db_path: /var/lib/t0x-map/t0x-map.db
 viewdat_path: viewdat
+t0x2t0x_path: /usr/local/bin/t0x2t0x
+python_path: python3
 groups:
   - BASES
   - GRK

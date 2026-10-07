@@ -28,6 +28,7 @@ dist: build-linux
 	cp config.example.yaml $(DIST_DIR)/
 	cp t0x-map.service t0x-map-index.service t0x-map-index.timer $(DIST_DIR)/
 	cp -R deploy $(DIST_DIR)/
+	chmod +x $(DIST_DIR)/deploy/check-deps.sh
 	cp README.md $(DIST_DIR)/
 	tar -C dist -czf dist/$(BINARY)-$(VERSION)-$(LINUX_GOOS)-$(LINUX_GOARCH).tar.gz \
 		$(BINARY)-$(VERSION)-$(LINUX_GOOS)-$(LINUX_GOARCH)

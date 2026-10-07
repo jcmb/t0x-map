@@ -13,20 +13,23 @@ import (
 )
 
 type File struct {
-	ID        int64
-	Path      string
-	RelPath   string
-	GroupName string
-	Receiver  string
-	Filename  string
-	Ext       string
-	SizeBytes int64
-	MtimeUnix int64
-	StartTime sql.NullString
-	EndTime   sql.NullString
-	Lat       sql.NullFloat64
-	Lon       sql.NullFloat64
-	IndexedAt string
+	ID           int64
+	Path         string
+	RelPath      string
+	GroupName    string
+	Receiver     string
+	Filename     string
+	Ext          string
+	SizeBytes    int64
+	MtimeUnix    int64
+	StartTime    sql.NullString
+	EndTime      sql.NullString
+	Lat          sql.NullFloat64
+	Lon          sql.NullFloat64
+	PosIntervalS sql.NullFloat64 // position spacing (seconds)
+	ObsIntervalS sql.NullFloat64 // epoch / raw spacing (seconds)
+	RatesChecked bool            // true after an extract attempt for rates
+	IndexedAt    string
 }
 
 type Meta struct {
@@ -59,6 +62,10 @@ func (d *DB) Close() error {
 	return d.sql.Close()
 }
 
+const fileSelectCols = `id, path, rel_path, group_name, receiver, filename, ext,
+       size_bytes, mtime_unix, start_time, end_time, lat, lon,
+       pos_interval_s, obs_interval_s, rates_checked, indexed_at`
+
 func (d *DB) migrate() error {
 	_, err := d.sql.Exec(`
 CREATE TABLE IF NOT EXISTS files (
@@ -80,22 +87,31 @@ CREATE TABLE IF NOT EXISTS files (
 CREATE INDEX IF NOT EXISTS idx_files_filters ON files(group_name, receiver, start_time, end_time);
 CREATE INDEX IF NOT EXISTS idx_files_geo ON files(lat, lon);
 `)
-	return err
+	if err != nil {
+		return err
+	}
+	for _, stmt := range []string{
+		`ALTER TABLE files ADD COLUMN pos_interval_s REAL`,
+		`ALTER TABLE files ADD COLUMN obs_interval_s REAL`,
+		`ALTER TABLE files ADD COLUMN rates_checked INTEGER NOT NULL DEFAULT 0`,
+	} {
+		if _, err := d.sql.Exec(stmt); err != nil {
+			// Column already exists on upgraded DBs.
+			if !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (d *DB) GetByPath(ctx context.Context, path string) (*File, error) {
-	row := d.sql.QueryRowContext(ctx, `
-SELECT id, path, rel_path, group_name, receiver, filename, ext,
-       size_bytes, mtime_unix, start_time, end_time, lat, lon, indexed_at
-FROM files WHERE path = ?`, path)
+	row := d.sql.QueryRowContext(ctx, `SELECT `+fileSelectCols+` FROM files WHERE path = ?`, path)
 	return scanFile(row)
 }
 
 func (d *DB) GetByID(ctx context.Context, id int64) (*File, error) {
-	row := d.sql.QueryRowContext(ctx, `
-SELECT id, path, rel_path, group_name, receiver, filename, ext,
-       size_bytes, mtime_unix, start_time, end_time, lat, lon, indexed_at
-FROM files WHERE id = ?`, id)
+	row := d.sql.QueryRowContext(ctx, `SELECT `+fileSelectCols+` FROM files WHERE id = ?`, id)
 	return scanFile(row)
 }
 
@@ -103,11 +119,16 @@ func (d *DB) Upsert(ctx context.Context, f *File) error {
 	if f.IndexedAt == "" {
 		f.IndexedAt = time.Now().UTC().Format(time.RFC3339)
 	}
+	ratesChecked := 0
+	if f.RatesChecked {
+		ratesChecked = 1
+	}
 	_, err := d.sql.ExecContext(ctx, `
 INSERT INTO files (
   path, rel_path, group_name, receiver, filename, ext,
-  size_bytes, mtime_unix, start_time, end_time, lat, lon, indexed_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  size_bytes, mtime_unix, start_time, end_time, lat, lon,
+  pos_interval_s, obs_interval_s, rates_checked, indexed_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(path) DO UPDATE SET
   rel_path=excluded.rel_path,
   group_name=excluded.group_name,
@@ -120,9 +141,13 @@ ON CONFLICT(path) DO UPDATE SET
   end_time=excluded.end_time,
   lat=excluded.lat,
   lon=excluded.lon,
+  pos_interval_s=excluded.pos_interval_s,
+  obs_interval_s=excluded.obs_interval_s,
+  rates_checked=excluded.rates_checked,
   indexed_at=excluded.indexed_at
 `, f.Path, f.RelPath, f.GroupName, f.Receiver, f.Filename, f.Ext,
-		f.SizeBytes, f.MtimeUnix, f.StartTime, f.EndTime, f.Lat, f.Lon, f.IndexedAt)
+		f.SizeBytes, f.MtimeUnix, f.StartTime, f.EndTime, f.Lat, f.Lon,
+		f.PosIntervalS, f.ObsIntervalS, ratesChecked, f.IndexedAt)
 	return err
 }
 
@@ -176,11 +201,7 @@ type FileFilter struct {
 	HasPos   bool
 }
 
-func (d *DB) ListFiles(ctx context.Context, f FileFilter) ([]File, error) {
-	var (
-		conds []string
-		args  []any
-	)
+func filterConds(f FileFilter) (conds []string, args []any) {
 	if f.HasPos {
 		conds = append(conds, "lat IS NOT NULL AND lon IS NOT NULL")
 	}
@@ -205,10 +226,12 @@ func (d *DB) ListFiles(ctx context.Context, f FileFilter) ([]File, error) {
 		conds = append(conds, "substr(start_time, 1, 10) <= ?")
 		args = append(args, f.To.UTC().Format("2006-01-02"))
 	}
-	q := `
-SELECT id, path, rel_path, group_name, receiver, filename, ext,
-       size_bytes, mtime_unix, start_time, end_time, lat, lon, indexed_at
-FROM files`
+	return conds, args
+}
+
+func (d *DB) ListFiles(ctx context.Context, f FileFilter) ([]File, error) {
+	conds, args := filterConds(f)
+	q := `SELECT ` + fileSelectCols + ` FROM files`
 	if len(conds) > 0 {
 		q += " WHERE " + strings.Join(conds, " AND ")
 	}
@@ -229,6 +252,57 @@ FROM files`
 		out = append(out, *file)
 	}
 	return out, rows.Err()
+}
+
+// BaseSite is one map marker per group/receiver (avg position).
+type BaseSite struct {
+	Group     string  `json:"group"`
+	Receiver  string  `json:"receiver"`
+	Lat       float64 `json:"lat"`
+	Lon       float64 `json:"lon"`
+	FileCount int     `json:"file_count"`
+}
+
+// ListBases returns one row per receiver with a position (for the map).
+func (d *DB) ListBases(ctx context.Context, f FileFilter) ([]BaseSite, error) {
+	f.HasPos = true
+	conds, args := filterConds(f)
+	q := `
+SELECT group_name, receiver, AVG(lat), AVG(lon), COUNT(*)
+FROM files`
+	if len(conds) > 0 {
+		q += " WHERE " + strings.Join(conds, " AND ")
+	}
+	q += ` GROUP BY group_name, receiver
+ORDER BY group_name, receiver`
+
+	rows, err := d.sql.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []BaseSite
+	for rows.Next() {
+		var b BaseSite
+		if err := rows.Scan(&b.Group, &b.Receiver, &b.Lat, &b.Lon, &b.FileCount); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// CountFiles returns how many rows match the filter (cheap status line).
+func (d *DB) CountFiles(ctx context.Context, f FileFilter) (int, error) {
+	conds, args := filterConds(f)
+	q := `SELECT COUNT(*) FROM files`
+	if len(conds) > 0 {
+		q += " WHERE " + strings.Join(conds, " AND ")
+	}
+	var n int
+	err := d.sql.QueryRowContext(ctx, q, args...).Scan(&n)
+	return n, err
 }
 
 func (d *DB) Meta(ctx context.Context) (*Meta, error) {
@@ -274,10 +348,7 @@ func (d *DB) GetByIDs(ctx context.Context, ids []int64) ([]File, error) {
 		placeholders[i] = "?"
 		args[i] = id
 	}
-	q := fmt.Sprintf(`
-SELECT id, path, rel_path, group_name, receiver, filename, ext,
-       size_bytes, mtime_unix, start_time, end_time, lat, lon, indexed_at
-FROM files WHERE id IN (%s)`, strings.Join(placeholders, ","))
+	q := fmt.Sprintf(`SELECT %s FROM files WHERE id IN (%s)`, fileSelectCols, strings.Join(placeholders, ","))
 	rows, err := d.sql.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
@@ -364,9 +435,11 @@ type scanner interface {
 
 func scanFile(row scanner) (*File, error) {
 	var f File
+	var ratesChecked int
 	err := row.Scan(
 		&f.ID, &f.Path, &f.RelPath, &f.GroupName, &f.Receiver, &f.Filename, &f.Ext,
-		&f.SizeBytes, &f.MtimeUnix, &f.StartTime, &f.EndTime, &f.Lat, &f.Lon, &f.IndexedAt,
+		&f.SizeBytes, &f.MtimeUnix, &f.StartTime, &f.EndTime, &f.Lat, &f.Lon,
+		&f.PosIntervalS, &f.ObsIntervalS, &ratesChecked, &f.IndexedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -374,5 +447,6 @@ func scanFile(row scanner) (*File, error) {
 	if err != nil {
 		return nil, err
 	}
+	f.RatesChecked = ratesChecked != 0
 	return &f, nil
 }

@@ -43,7 +43,7 @@ func acceptsGzip(r *http.Request) bool {
 
 func skipGzipPath(p string) bool {
 	// Binary downloads and zip archives — compression wastes CPU for little gain.
-	if strings.Contains(p, "/api/download") {
+	if strings.Contains(p, "/api/download") || strings.Contains(p, "/api/export") {
 		return true
 	}
 	return false

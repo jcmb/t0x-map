@@ -14,6 +14,8 @@ type Config struct {
 	DataRoot    string   `yaml:"data_root"`
 	DBPath      string   `yaml:"db_path"`
 	ViewdatPath string   `yaml:"viewdat_path"`
+	T0x2t0xPath string   `yaml:"t0x2t0x_path"`
+	PythonPath  string   `yaml:"python_path"`
 	Groups      []string `yaml:"groups"`
 }
 
@@ -39,6 +41,12 @@ func (c *Config) applyDefaults() {
 	}
 	if c.ViewdatPath == "" {
 		c.ViewdatPath = "viewdat"
+	}
+	if c.T0x2t0xPath == "" {
+		c.T0x2t0xPath = "/usr/local/bin/t0x2t0x"
+	}
+	if c.PythonPath == "" {
+		c.PythonPath = "python3"
 	}
 	c.BasePath = strings.TrimSuffix(c.BasePath, "/")
 }
